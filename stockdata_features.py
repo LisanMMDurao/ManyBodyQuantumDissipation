@@ -281,9 +281,30 @@ class StockFeaturesExtractor:
         """Extrai símbolo limpo: 'PETR4.SA' → 'PETR4', 'AAPL' → 'AAPL'."""
         return ticker.split(".")[0]
 
-    @staticmethod
-    def _normalizar_ohlcv(df: pd.DataFrame, ticker: str) -> pd.DataFrame:
-        if df.empty: return df
+    # campos OHLCV reconhecidos (usados para achatar o MultiIndex com segurança)
+    _OHLCV_FIELDS = ("Open", "High", "Low", "Close", "Adj Close", "Volume")
+
+    @classmethod
+    def _flatten_columns(cls, df: pd.DataFrame) -> pd.DataFrame:
+        """Achata um MultiIndex de colunas escolhendo, em cada coluna, o nível
+        que corresponde a um campo OHLCV — independente da ordem (campo,ticker)
+        ou (ticker,campo) que o yfinance devolver."""
+        if not isinstance(df.columns, pd.MultiIndex):
+            return df
+        campos = set(cls._OHLCV_FIELDS)
+        novas = []
+        for tup in df.columns:
+            match = [x for x in tup if x in campos]
+            novas.append(match[0] if match else tup[-1])
+        df = df.copy()
+        df.columns = novas
+        return df
+
+    @classmethod
+    def _normalizar_ohlcv(cls, df: pd.DataFrame, ticker: str) -> pd.DataFrame:
+        if df is None or df.empty:
+            return pd.DataFrame()
+        df = cls._flatten_columns(df)
         df = df.copy()
         if df.index.tz is not None:
             df.index = df.index.tz_localize(None)
@@ -292,12 +313,14 @@ class StockFeaturesExtractor:
         df = df[df.index.dayofweek < 5]
         df = df.sort_index()
         df.index.name = "date"
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = [c[0] if isinstance(c, tuple) else c for c in df.columns]
+        # remove colunas duplicadas (origem do InvalidIndexError no concat)
+        df = df.loc[:, ~df.columns.duplicated()]
         keep = [c for c in ["Open", "High", "Low", "Close", "Volume"] if c in df.columns]
+        if not keep:
+            return pd.DataFrame()
         df = df[keep]
         df["ticker"] = ticker
-        df["unique_id"] = StockFeaturesExtractor._ticker_to_uid(ticker)
+        df["unique_id"] = cls._ticker_to_uid(ticker)
         return df
 
     def extrair_acao(self, acao_id: str) -> pd.DataFrame:
